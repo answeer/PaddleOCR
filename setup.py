@@ -6,6 +6,7 @@ import time
 import logging
 import traceback
 import warnings
+import csv
 from pathlib import Path
 from urllib3.exceptions import InsecureRequestWarning
 
@@ -16,7 +17,7 @@ from docx2pdf import convert
 from fpdf import FPDF
 from PyPDF2 import PdfReader
 
-# 注意：以下导入已被注释掉或可能需要额外安装
+# Note: The following imports are commented out or require additional installation
 # import base64
 # import img2pdf
 # import pythoncom
@@ -24,10 +25,10 @@ from PyPDF2 import PdfReader
 # import py7zr
 # from src.docling.docling_custom import md_file_create
 
-# 抑制不安全请求警告
+# Suppress insecure request warnings
 warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 
-# 日志配置
+# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -35,13 +36,13 @@ JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}", re.MULTILINE)
 
 
 def extract_json_block(text: str) -> str | None:
-    """从字符串中提取第一个JSON对象（尽力而为）"""
+    """Extract the first JSON object from a string (best-effort approach)"""
     match = JSON_BLOCK_RE.search(text.strip())
     return match.group(0) if match else None
 
 
 def coerce_to_json(text: str) -> dict:
-    """尝试解析JSON，失败则尝试提取JSON块"""
+    """Attempt to parse JSON directly; if it fails, try extracting a JSON block first"""
     try:
         return json.loads(text)
     except json.JSONDecodeError:
@@ -52,7 +53,7 @@ def coerce_to_json(text: str) -> dict:
 
 
 def extract_page_numbers(coords: dict) -> str:
-    """从坐标字典中提取页码"""
+    """Extract page numbers from a coordinates dictionary"""
     page_numbers = []
     for page in coords.keys():
         match = re.search(r'\d+', str(page))
@@ -63,7 +64,7 @@ def extract_page_numbers(coords: dict) -> str:
 
 
 def get_existing_contracts(output_csv: str) -> set:
-    """从CSV文件中获取已存在的合同引用号"""
+    """Get existing contract reference numbers from CSV file"""
     contracts = set()
     if os.path.exists(output_csv):
         with open(output_csv, "r", encoding="utf-8") as f:
@@ -74,25 +75,25 @@ def get_existing_contracts(output_csv: str) -> set:
 
 
 def json_to_csv_prepend_new(input_folder: str, output_csv: str):
-    """将JSON文件转换为CSV，新数据放在顶部"""
+    """Convert JSON files to CSV with new data prepended at the top"""
     header = [
         "Contract_Reference_Number", "File_Name", "clause_type", "clause_key",
         "is_present", "clause_coverage_score", "confidence", "page_number"
     ]
 
-    # 获取现有合同
+    # Get existing contracts
     existing_contracts = get_existing_contracts(output_csv)
 
-    # 列出输入文件夹中的所有子目录
+    # List all subdirectories in input folder
     all_contracts = [
         d for d in os.listdir(input_folder)
         if os.path.isdir(os.path.join(input_folder, d))
     ]
 
-    # 找出新合同
+    # Find new contracts
     new_contracts = [c for c in all_contracts if c not in existing_contracts]
 
-    # 收集新行数据
+    # Collect new rows
     new_rows = []
     for contract_reference_number in new_contracts:
         contract_dir = os.path.join(input_folder, contract_reference_number)
@@ -108,7 +109,7 @@ def json_to_csv_prepend_new(input_folder: str, output_csv: str):
                     logger.error(f"Failed to parse JSON {file_path}: {e}")
                     continue
 
-            # 处理标准条款
+            # Process standard clauses
             for clause in data.get("standard_general_clause_details", []):
                 if not clause.get("is_present"):
                     continue
@@ -125,7 +126,7 @@ def json_to_csv_prepend_new(input_folder: str, output_csv: str):
                     page_numbers
                 ])
 
-            # 处理服务特定条款
+            # Process service-specific clauses
             for service_name, clauses in data.get("service_specific_clauses", {}).items():
                 for clause in clauses:
                     if not clause.get("is_present"):
@@ -143,17 +144,17 @@ def json_to_csv_prepend_new(input_folder: str, output_csv: str):
                         page_numbers
                     ])
 
-    # 读取旧行数据
+    # Read old rows (if any)
     old_rows = []
     if os.path.exists(output_csv):
         with open(output_csv, "r", encoding="utf-8") as f:
             reader = csv.reader(f)
             old_rows = list(reader)
-        # 移除标题行
+        # Remove header row if present
         if old_rows and old_rows[0][0] == header[0]:
             old_rows = old_rows[1:]
 
-    # 写入新数据在顶部，然后是旧数据
+    # Write new rows at the top, followed by old rows
     with open(output_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(header)
@@ -162,7 +163,7 @@ def json_to_csv_prepend_new(input_folder: str, output_csv: str):
 
 
 def get_token() -> str:
-    """获取API令牌"""
+    """Retrieve API authentication token"""
     while True:
         try:
             token_response = requests.get(
@@ -180,7 +181,7 @@ def get_token() -> str:
 
 
 def llm_callback(prompt, max_retries=3):
-    """调用LLM API"""
+    """Call LLM API with retry mechanism"""
     token = get_token()
     headers = {'Authorization': f"Bearer {token}", 'Content-Type': 'application/json'}
     payload = {
@@ -216,7 +217,7 @@ def llm_callback(prompt, max_retries=3):
             error = resp_json.get('error', {})
             error_message = error.get('message', '')
             
-            # 解析错误信息
+            # Parse error message
             parsed_error = {}
             if isinstance(error_message, str):
                 try:
@@ -224,20 +225,20 @@ def llm_callback(prompt, max_retries=3):
                 except (json.JSONDecodeError, TypeError):
                     parsed_error = {}
             
-            # 处理速率限制错误
+            # Handle rate limit error
             if (parsed_error.get('error_code') == 'REQUEST_LIMIT_EXCEEDED' or
                 'REQUEST_LIMIT_EXCEEDED' in error_message):
                 logger.warning("Rate limit exceeded, waiting 60 seconds before retrying...")
                 time.sleep(60)
                 continue
             
-            # 处理输入过长错误
+            # Handle input too long error
             if (parsed_error.get('message', '') == "Input is too long for requested model." or
                 "Input is too long for requested model." in error_message):
                 logger.error("Input too long for model.")
                 return None
             
-            # 成功获取响应
+            # Successfully get response
             llm_output = resp_json.get('choices', [{}])[0].get('message', {}).get('content')
             return llm_output
             
@@ -250,11 +251,11 @@ def llm_callback(prompt, max_retries=3):
 
 
 class FileConverter:
-    """文件转换器，处理各种格式到PDF的转换"""
+    """File converter for transforming various formats to PDF"""
     
     @staticmethod
     def convert_xlsx_to_pdf(xlsx_path: str, pdf_path: str) -> bool:
-        """转换Excel文件到PDF"""
+        """Convert Excel file to PDF format"""
         try:
             df = pd.read_excel(xlsx_path)
             csv_temp_path = pdf_path.replace('.pdf', '.csv')
@@ -266,7 +267,7 @@ class FileConverter:
     
     @staticmethod
     def convert_csv_to_pdf(csv_path: str, pdf_path: str) -> bool:
-        """转换CSV文件到PDF"""
+        """Convert CSV file to PDF format"""
         try:
             df = pd.read_csv(csv_path)
             pdf = FPDF()
@@ -279,7 +280,7 @@ class FileConverter:
             for index, row in df.iterrows():
                 line = " | ".join([str(x) for x in row.values])
                 pdf.multi_cell(0, 10, txt=line)
-                if index > 50:  # 限制行数
+                if index > 50:  # Limit number of rows
                     pdf.cell(0, 10, txt="... (truncated)", ln=True)
                     break
             
@@ -291,7 +292,7 @@ class FileConverter:
     
     @staticmethod
     def file_to_base64(file_path: str) -> str | None:
-        """将文件转换为Base64编码"""
+        """Convert file content to Base64 encoding"""
         try:
             with open(file_path, "rb") as file:
                 encoded_content = base64.b64encode(file.read()).decode('utf-8')
@@ -302,7 +303,7 @@ class FileConverter:
 
 
 class ContractMetadataExtractor:
-    """合同元数据提取器"""
+    """Contract metadata extractor for processing contract documents"""
     
     def __init__(self, base_folder: str, user_prompt_path: str, 
                  clause_details_path: str, llm_callback: callable,
@@ -314,7 +315,7 @@ class ContractMetadataExtractor:
         self.meta_output_folder = meta_output_folder
         self.services = []
         
-        # 加载提示词和条款详情
+        # Load prompt template and clause details
         with open(user_prompt_path, 'r', encoding='utf-8') as f:
             self.user_prompt = f.read()
             
@@ -322,14 +323,14 @@ class ContractMetadataExtractor:
             self.clause_details = json.load(f)
     
     def _get_normalised_services(self, data: dict) -> list:
-        """从元数据中获取标准化服务列表"""
+        """Extract normalized services list from metadata"""
         details = data.get("DOCUMENT DETAILS", {})
         services = details.get("SERVICES/SUPPLIES DETAILS", {})
         mentioned = services.get("Services Mentioned", {})
         return mentioned.get("normalised value", [])
     
     def _create_clause_template(self, services: list) -> tuple[dict, dict]:
-        """创建条款模板"""
+        """Create clause template for LLM processing"""
         standard_general_clause_details = []
         for clause in self.clause_details.get("standard_general_clause_details", [])[:2]:
             standard_general_clause_details.append({
@@ -353,13 +354,13 @@ class ContractMetadataExtractor:
                     "coordinates": None
                 })
         
-        # 创建模板
+        # Create template structure
         clause_template = {
             "standard_general_clause_details": standard_general_clause_details,
             "service_specific_clauses": service_specific_clauses
         }
         
-        # 创建过滤后的完整JSON
+        # Create filtered full JSON for reference
         filtered_json = {
             "standard_general_clause_details": self.clause_details.get("standard_general_clause_details", []),
             "service_specific_clauses": {
@@ -371,7 +372,7 @@ class ContractMetadataExtractor:
         return clause_template, filtered_json
     
     def _convert_clause_details(self, meta_output_path: str) -> tuple[str, str]:
-        """转换条款详情为JSON字符串"""
+        """Convert clause details to JSON strings for LLM input"""
         try:
             with open(meta_output_path, 'r', encoding='utf-8') as f:
                 meta_data = json.load(f)
@@ -389,7 +390,7 @@ class ContractMetadataExtractor:
     def _build_prompt(self, contract_number: str, pdf_base64: str, 
                      user_prompt_converted: str, clause_details_filtered: str,
                      md_text: str = None) -> list:
-        """构建LLM提示词"""
+        """Build LLM prompt with document content"""
         pdf_content = {
             "type": "document",
             "source": {
@@ -419,20 +420,20 @@ class ContractMetadataExtractor:
         return prompt
     
     def _convert_file_to_pdf(self, file_path: str, contract_name: str) -> tuple[str, bool]:
-        """将文件转换为PDF，返回PDF路径和是否成功"""
+        """Convert various file formats to PDF for processing"""
         file_extension = Path(file_path).suffix.lower()
         temp_pdf_path = os.path.join("doc_to_pdf", f"{contract_name}_{Path(file_path).stem}.pdf")
         
-        # 如果已经是PDF，直接使用
+        # If file is already PDF, use it directly
         if file_extension == '.pdf':
             return file_path, True
         
-        # 检查是否已转换
+        # Check if already converted
         if os.path.exists(temp_pdf_path):
             logger.info(f"File converted already and present in temp: {temp_pdf_path}")
             return temp_pdf_path, True
         
-        # 根据文件类型进行转换
+        # Convert based on file type
         conversion_success = False
         try:
             if file_extension == '.docx':
@@ -442,7 +443,7 @@ class ContractMetadataExtractor:
                 conversion_success = FileConverter.convert_xlsx_to_pdf(file_path, temp_pdf_path)
             elif file_extension == '.csv':
                 conversion_success = FileConverter.convert_csv_to_pdf(file_path, temp_pdf_path)
-            # 注意：以下转换器需要额外库支持
+            # Note: The following converters require additional libraries
             # elif file_extension in ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif']:
             #     conversion_success = self.convert_image_to_pdf(file_path, temp_pdf_path)
             # elif file_extension == '.msg':
@@ -453,7 +454,7 @@ class ContractMetadataExtractor:
         return temp_pdf_path, conversion_success
     
     def _get_greatest_user_contract_dir(self) -> str | None:
-        """获取最大的用户合同目录"""
+        """Find the latest User_Contract directory by numeric suffix"""
         pattern = re.compile(r'^User_Contract_(\d+)$')
         max_num = -1
         max_dir = None
@@ -471,7 +472,7 @@ class ContractMetadataExtractor:
         return max_dir
     
     def process_single_contract(self, contract_folder: str) -> dict:
-        """处理单个合同文件夹"""
+        """Process all files in a single contract folder"""
         contract_name = Path(contract_folder).name
         logger.info(f"Processing contract: {contract_name}")
 
@@ -489,30 +490,30 @@ class ContractMetadataExtractor:
             file_extension = Path(contract_file).suffix.lower()
             file_name = Path(contract_file).name
             
-            # 跳过不支持的文件格式
+            # Skip unsupported file formats
             if file_extension in [".msg", ".doc", ".xls"]:
                 logger.warning(f"Skipping unsupported format: {file_extension}")
                 results[file_name] = "Unsupported format"
                 continue
             
-            # 准备输出路径
+            # Prepare output paths
             output_filename = Path(contract_file).stem + '.json'
             output_path = os.path.join(output_folder, output_filename)
             meta_output_path = os.path.join(meta_output_folder, output_filename)
             
-            # 检查元数据是否存在
+            # Check if metadata exists
             if not os.path.exists(meta_output_path):
                 logger.warning(f"No meta data json exists: {meta_output_path}")
                 results[file_name] = "Missing meta data"
                 continue
             
-            # 检查是否已处理
+            # Check if already processed
             if os.path.exists(output_path):
                 logger.info(f"File already processed: {output_path}")
                 results[file_name] = "Processed Already!"
                 continue
             
-            # 转换条款详情
+            # Convert clause details
             clause_details_converted, clause_details_filtered = self._convert_clause_details(meta_output_path)
             if clause_details_converted is None:
                 results[file_name] = "Failed to convert clause details"
@@ -520,7 +521,7 @@ class ContractMetadataExtractor:
             
             user_prompt_converted = self.user_prompt + clause_details_converted
             
-            # 处理文件转换
+            # Handle file conversion
             logger.info(f"Processing file: {file_name}")
             pdf_path, conversion_success = self._convert_file_to_pdf(contract_file, contract_name)
             
@@ -530,13 +531,13 @@ class ContractMetadataExtractor:
             if conversion_success and len(PdfReader(pdf_path).pages) < 100:
                 encoded_content = FileConverter.file_to_base64(pdf_path)
             else:
-                # 对于大文件或转换失败的情况，可以尝试其他方法
-                # 注意：这里原来的docling代码被注释掉了
+                # For large files or failed conversions, skip processing
+                # Note: Original docling code is commented out
                 logger.warning(f"Skipping large file or conversion failed: {file_name}")
                 results[file_name] = "File too large or conversion failed"
                 continue
             
-            # 构建提示词并调用LLM
+            # Build prompt and call LLM
             prompt = self._build_prompt(contract_name, encoded_content, 
                                        user_prompt_converted, clause_details_filtered, md_text)
             
@@ -560,7 +561,7 @@ class ContractMetadataExtractor:
         return results
     
     def process_all_contracts(self) -> dict:
-        """处理所有合同"""
+        """Process all contract folders in the base directory"""
         all_results = {}
         subfolders = [self._get_greatest_user_contract_dir()]
         
